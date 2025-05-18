@@ -1,0 +1,19 @@
+# Node.js modules
+node_modules/
+
+# Build output
+main.js
+
+# Optional: IDE/Editor specific files
+.vscode/
+.idea/
+
+# Optional: OS specific files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log* 
