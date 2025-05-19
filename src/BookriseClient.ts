@@ -6,6 +6,7 @@ export interface Book {
   isbn?: string;
   tags?: string[];
   percent_read?: number;
+  assistant_id?: string;
   // Add other book properties as needed from the API response
 }
 
@@ -26,7 +27,8 @@ export interface Highlight {
 export interface ChatResponse {
   answer: string;
   cited_paragraph_ids: string[]; // Or however the citations are structured
-  // Add other potential response fields
+  // Add streaming support
+  onChunk?: (chunk: string) => void;
 }
 
 // Define a type for the requestUrl function from Obsidian API
@@ -35,7 +37,7 @@ export interface ChatResponse {
 export type RequestUrlFunc = (options: { url: string; method?: string; headers?: Record<string, string>; body?: string; }) => Promise<{ status: number; text: string; json: any; }>;
 
 export class BookriseClient {
-  private baseUrl = "https://app.bookrise.io/api"; // Removed /v1
+  private baseUrl = "https://app.bookrise.io"; // Remove /api since it's part of the endpoint
 
   constructor(private token: string, private requestUrlFn: RequestUrlFunc) {}
 
@@ -90,14 +92,14 @@ export class BookriseClient {
   }
 
   async listBooks(): Promise<Book[]> {
-    return this.request<Book[]>("/books");
+    return this.request<Book[]>("/api/books");
   }
 
   async listHighlights(bookId: string): Promise<Highlight[]> {
     if (!bookId) {
       throw new Error("bookId is required to list highlights.");
     }
-    return this.request<Highlight[]>(`/highlights?book_id=${bookId}`);
+    return this.request<Highlight[]>(`/api/highlights?book_id=${bookId}`);
   }
 
   // GET /highlights/{id} is also mentioned in the notes, could be added if needed
@@ -105,58 +107,103 @@ export class BookriseClient {
   //   return this.request<Highlight>(`/highlights/${highlightId}`);
   // }
 
-  async chat(bookId: string, prompt: string, contextIds?: string[]): Promise<ChatResponse> {
+  async chat(bookId: string, prompt: string, contextIds?: string[], onChunk?: (chunk: string) => void): Promise<ChatResponse> {
     if (!bookId || !prompt) {
       throw new Error("bookId and prompt are required for chat.");
     }
-    const body: { book_id: string; prompt: string; context_ids?: string[] } = {
-      book_id: bookId,
-      prompt,
-    };
-    if (contextIds && contextIds.length > 0) {
-      body.context_ids = contextIds;
+
+    // Get the book details first to ensure we have the correct assistant_id
+    const books = await this.listBooks();
+    const book = books.find(b => b.id === bookId);
+    
+    if (!book) {
+      throw new Error(`Book with ID ${bookId} not found`);
     }
 
-    // Special case for the chat endpoint if it's not under /api
-    const chatUrl = "https://app.bookrise.io/chat"; 
-
-    console.log(`Requesting: POST ${chatUrl} with book_id: ${bookId}`);
+    // Use the correct endpoint without /api prefix
+    const endpoint = "/chat";
     
-    // Directly use requestUrlFn for this special case to bypass baseUrl prefixing
-    const response = await this.requestUrlFn({
-      url: chatUrl,
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
+    try {
+      console.log(`Attempting chat request to: ${this.baseUrl}${endpoint}`);
+      
+      const body = {
+        book_id: bookId,
+        message: prompt,
+        context_ids: contextIds || []
+      };
 
-    if (response.status < 200 || response.status >= 300) {
-      let errorBody = response.text;
-      try {
-        const parsedError = JSON.parse(response.text);
-        errorBody = parsedError.detail || response.text;
-      } catch (e) {
-        // Not JSON
+      // If we have an onChunk callback, use streaming
+      if (onChunk) {
+        const response = await fetch(`${this.baseUrl}${endpoint}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+          },
+          body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Chat API error: ${response.status} - ${errorText}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('Failed to get response reader');
+        }
+
+        let fullAnswer = '';
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+              
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.answer) {
+                  fullAnswer += parsed.answer;
+                  onChunk(parsed.answer);
+                }
+              } catch (e) {
+                console.warn('Failed to parse chunk:', e);
+              }
+            }
+          }
+        }
+
+        return {
+          answer: fullAnswer,
+          cited_paragraph_ids: [] // TODO: Get citations from stream
+        };
       }
-      console.error(`API Error for chat: ${response.status}`, errorBody);
-      throw new Error(`Error calling BookRise chat: Status ${response.status} - ${errorBody}`);
-    }
 
-    const responseText = response.text;
-    if (!responseText && response.status !== 204) {
-      console.warn(`Empty response for chat status ${response.status} from ${chatUrl}`);
-      return { answer: "Received empty response." } as ChatResponse; // Provide a default ChatResponse
+      // Non-streaming fallback
+      const response = await this.request<ChatResponse>(endpoint, {
+        method: "POST",
+        body: JSON.stringify(body)
+      });
+
+      if (!response) {
+        throw new Error("Received empty response from chat API");
+      }
+
+      return response;
+
+    } catch (error) {
+      console.error(`Error with chat endpoint ${endpoint}:`, error);
+      throw new Error(`Failed to get chat response: ${error.message}`);
     }
-    if (response.status === 204) {
-      return { answer: "Chat session updated (No Content)." } as ChatResponse; // Provide a default ChatResponse
-    }
-    
-    // Assuming the response is JSON and matches ChatResponse structure
-    // If it's streaming, this will need to change significantly.
-    return JSON.parse(responseText) as ChatResponse;
   }
 
   // Placeholder for GET /reading-queue (for feature #3)

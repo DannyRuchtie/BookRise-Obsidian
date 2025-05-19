@@ -210,32 +210,34 @@ class BookriseChatView extends ItemView {
 		this.sendButtonEl.disabled = true; // Disable send button while waiting for response
 		this.messageInputEl.disabled = true; // Disable input while waiting
 
-		// Show a thinking message, which will be replaced by the actual response or an error
-		const thinkingMessageEl = this.chatMessagesContainerEl.createDiv({ cls: "bookrise-ai-message bookrise-thinking" });
-		thinkingMessageEl.setText("BookRise AI: Thinking...");
-		thinkingMessageEl.style.fontStyle = "italic";
-		this.chatMessagesContainerEl.scrollTop = this.chatMessagesContainerEl.scrollHeight;
+		// Create a container for the streaming response
+		const aiMessageEl = this.chatMessagesContainerEl.createDiv({ cls: "bookrise-ai-message" });
+		aiMessageEl.setText("BookRise AI: ");
+		let currentResponse = "";
 
 		try {
-			// We might need to manage chat history here in the future.
-			// For now, assuming the client.chat method takes the bookId and the current message.
-			// If your BookriseClient.chat method expects a history, you'll need to adapt this.
-			const response = await this.plugin.client.chat(this.selectedBookId, message /*, chatHistory */);
-			
-			// Remove the "Thinking..." message
-			thinkingMessageEl.remove();
+			const response = await this.plugin.client.chat(
+				this.selectedBookId,
+				message,
+				undefined,
+				(chunk) => {
+					currentResponse += chunk;
+					aiMessageEl.setText(`BookRise AI: ${currentResponse}`);
+					this.chatMessagesContainerEl.scrollTop = this.chatMessagesContainerEl.scrollHeight;
+				}
+			);
 
-			if (response && response.answer) {
-				this.displayAIMessage(response.answer);
+			// Final update with complete response
+			if (response.answer) {
+				aiMessageEl.setText(`BookRise AI: ${response.answer}`);
 			} else {
-				this.displayAIMessage("Received an empty or unexpected response from BookRise AI.");
-				console.warn("BookRise chat response missing 'answer' field or was falsy:", response);
+				aiMessageEl.setText("BookRise AI: Received an empty response.");
+				console.warn("BookRise chat response missing 'answer' field:", response);
 			}
 
 		} catch (error) {
 			console.error("Error calling BookRise chat API:", error);
-			thinkingMessageEl.remove(); // Remove "Thinking..." message on error too
-			this.displayAIMessage("Sorry, I couldn't get a response. Please try again. Check console for details.");
+			aiMessageEl.setText("BookRise AI: Sorry, I couldn't get a response. Please try again.");
 			new Notice("Error sending chat message. See console.");
 		} finally {
 			this.sendButtonEl.disabled = false; // Re-enable send button
