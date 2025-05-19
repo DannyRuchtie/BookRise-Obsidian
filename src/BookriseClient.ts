@@ -27,8 +27,7 @@ export interface Highlight {
 export interface ChatResponse {
   answer: string;
   cited_paragraph_ids: string[]; // Or however the citations are structured
-  // Add streaming support
-  onChunk?: (chunk: string) => void;
+  cited_chapters?: number[]; // Added to capture cited_chapters
 }
 
 // Define a type for the requestUrl function from Obsidian API
@@ -156,12 +155,17 @@ export class BookriseClient {
 
         let fullAnswer = '';
         const decoder = new TextDecoder();
+        let citedChapters: number[] = []; // Variable to store cited chapters
 
         while (true) {
           const { done, value } = await reader.read();
+          console.log(`Stream reader: done = ${done}, value length = ${value ? value.byteLength : 'undefined'}`);
+
           if (done) break;
 
-          const chunk = decoder.decode(value);
+          const chunk = decoder.decode(value, { stream: true }); // Use {stream: true} for TextDecoder
+          console.log("Raw stream chunk decoded:", chunk);
+
           const lines = chunk.split('\n');
           
           for (const line of lines) {
@@ -171,10 +175,30 @@ export class BookriseClient {
               
               try {
                 const parsed = JSON.parse(data);
-                if (parsed.answer) {
+                console.log("Parsed stream data chunk:", JSON.stringify(parsed)); // Log the parsed chunk
+                if (parsed.content) { // THIS IS THE KEY CHANGE
+                  fullAnswer += parsed.content;
+                  onChunk(parsed.content);
+                } else if (parsed.answer) { 
                   fullAnswer += parsed.answer;
                   onChunk(parsed.answer);
+                } else if (parsed.delta) { 
+                  fullAnswer += parsed.delta;
+                  onChunk(parsed.delta);
+                } else if (typeof parsed === 'string') { 
+                  fullAnswer += parsed;
+                  onChunk(parsed);
                 }
+
+                if (parsed.cited_chapters && Array.isArray(parsed.cited_chapters)) {
+                  citedChapters = citedChapters.concat(parsed.cited_chapters);
+                }
+
+                if (parsed.done && parsed.status === "completed") {
+                  // Optional: Could break here if [DONE] is not always sent separately
+                  // but the main loop condition `if (done) break;` should handle it.
+                }
+
               } catch (e) {
                 console.warn('Failed to parse chunk:', e);
               }
@@ -184,7 +208,8 @@ export class BookriseClient {
 
         return {
           answer: fullAnswer,
-          cited_paragraph_ids: [] // TODO: Get citations from stream
+          cited_paragraph_ids: [], // TODO: Get citations from stream (still to be refined if paragraph_ids are different from chapters)
+          cited_chapters: Array.from(new Set(citedChapters)) // Store unique chapter numbers
         };
       }
 

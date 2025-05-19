@@ -212,7 +212,7 @@ class BookriseChatView extends ItemView {
 
 		// Create a container for the streaming response
 		const aiMessageEl = this.chatMessagesContainerEl.createDiv({ cls: "bookrise-ai-message" });
-		aiMessageEl.setText("BookRise AI: ");
+		aiMessageEl.setText("BookRise AI: Thinking...");
 		let currentResponse = "";
 
 		try {
@@ -227,13 +227,18 @@ class BookriseChatView extends ItemView {
 				}
 			);
 
-			// Final update with complete response
-			if (response.answer) {
-				aiMessageEl.setText(`BookRise AI: ${response.answer}`);
-			} else {
+			// The onChunk callback already updated the aiMessageEl with the streaming content.
+			// The response.answer from the client.chat is the aggregation of chunks.
+			// We can use it for a final update or log if it's unexpectedly empty when currentResponse is also empty.
+			if (!currentResponse && !response.answer) {
 				aiMessageEl.setText("BookRise AI: Received an empty response.");
-				console.warn("BookRise chat response missing 'answer' field:", response);
-			}
+				console.warn("BookRise chat stream resulted in an empty answer:", response);
+			} else if (response.answer && currentResponse !== response.answer) {
+				// This case might happen if the final response object has a more polished/complete answer
+				// or if there was a part of the response not sent via stream events.
+				aiMessageEl.setText(`BookRise AI: ${response.answer}`);
+				console.log("Final chat response.answer differed from accumulated chunks or provided additional details.");
+			} // If currentResponse is populated and response.answer matches, no further action is needed here.
 
 		} catch (error) {
 			console.error("Error calling BookRise chat API:", error);
