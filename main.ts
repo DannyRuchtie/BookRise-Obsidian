@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFolder, TFile } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFolder, TFile, ItemView, WorkspaceLeaf } from 'obsidian';
 import { BookriseClient, Book, Highlight } from './src/BookriseClient'; // Assuming BookriseClient.ts is in a src folder
 
 // Define settings interface
@@ -13,6 +13,240 @@ const DEFAULT_SETTINGS: BookrisePluginSettings = {
 	bookriseApiKey: '',
 	bookriseSyncFolder: 'BookRise', // Default sync folder
 	createNotePerHighlight: false // Default to false
+}
+
+export const BOOKRISE_CHAT_VIEW_TYPE = "bookrise-chat-view";
+
+class BookriseChatView extends ItemView {
+	plugin: BookrisePlugin;
+	books: Book[] = [];
+	selectedBookId: string | null = null;
+
+	// UI Elements
+	bookSelectEl!: HTMLSelectElement;
+	chatMessagesContainerEl!: HTMLDivElement;
+	messageInputEl!: HTMLInputElement;
+	sendButtonEl!: HTMLButtonElement;
+
+	constructor(leaf: WorkspaceLeaf, plugin: BookrisePlugin) {
+		super(leaf);
+		this.plugin = plugin;
+	}
+
+	getViewType() {
+		return BOOKRISE_CHAT_VIEW_TYPE;
+	}
+
+	getDisplayText() {
+		return "BookRise Chat";
+	}
+
+	// icon = "message-circle"; // Optional: set an icon for the view tab
+
+	async onOpen() {
+		const container = this.containerEl.children[1]; // The contentEl
+		container.empty();
+		container.createEl("h4", { text: "BookRise Chat" });
+
+		// Book selection dropdown
+		const bookSelectContainer = container.createDiv({ cls: "bookrise-chat-book-select-container" });
+		bookSelectContainer.style.marginBottom = "10px";
+		
+		this.bookSelectEl = bookSelectContainer.createEl("select", { cls: "bookrise-chat-book-select" });
+		this.bookSelectEl.style.width = "100%";
+		this.bookSelectEl.style.padding = "8px";
+
+		// Chat messages container
+		this.chatMessagesContainerEl = container.createDiv({ cls: "bookrise-chat-messages" });
+		this.chatMessagesContainerEl.style.height = "calc(100% - 160px)"; // Adjusted height for book selector
+		this.chatMessagesContainerEl.style.overflowY = "auto";
+		this.chatMessagesContainerEl.style.border = "1px solid var(--background-modifier-border)";
+		this.chatMessagesContainerEl.style.padding = "10px";
+		this.chatMessagesContainerEl.style.marginBottom = "10px";
+
+		// Input area
+		const inputContainer = container.createDiv({ cls: "bookrise-chat-input-container" });
+		inputContainer.style.display = "flex";
+		inputContainer.style.gap = "5px";
+
+		this.messageInputEl = inputContainer.createEl("input", { 
+			type: "text", 
+			placeholder: "Select a book and ask...",
+			cls: "bookrise-chat-input"
+		});
+		this.messageInputEl.style.flexGrow = "1";
+		this.messageInputEl.style.padding = "8px";
+
+		this.sendButtonEl = inputContainer.createEl("button", { 
+			text: "Send",
+			cls: "bookrise-chat-send-button"
+		});
+		this.sendButtonEl.style.padding = "8px 15px";
+
+		await this.loadBooks();
+
+		// Event Listeners
+		this.bookSelectEl.onchange = () => {
+			this.selectedBookId = this.bookSelectEl.value || null;
+			this.chatMessagesContainerEl.empty(); // Clear chat on book change
+			if (this.selectedBookId) {
+				this.messageInputEl.placeholder = "Ask about the selected book...";
+				this.displaySystemMessage(`Chatting about: ${this.books.find(b => b.id === this.selectedBookId)?.title || 'Unknown Book'}`);
+			} else {
+				this.messageInputEl.placeholder = "Select a book to start chatting...";
+				this.displaySystemMessage("Please select a book to chat about.");
+			}
+		};
+		
+		this.sendButtonEl.onClickEvent(this.handleSendMessage.bind(this));
+		this.messageInputEl.addEventListener('keypress', (event) => {
+			if (event.key === 'Enter') {
+				event.preventDefault();
+				this.handleSendMessage();
+			}
+		});
+		
+		// Initial state
+		if (this.books.length === 0) {
+		    this.displaySystemMessage("No books found or API key not set. Please check settings and sync if needed.");
+		    this.messageInputEl.disabled = true;
+		    this.sendButtonEl.disabled = true;
+		    this.bookSelectEl.disabled = true;
+		} else {
+		    this.messageInputEl.placeholder = "Select a book to start chatting...";
+			this.displaySystemMessage("Please select a book to chat about.");
+		}
+
+	}
+
+	async loadBooks() {
+		if (!this.plugin.client) {
+			new Notice("BookRise client not available. API key might be missing.");
+			this.populateBookSelect(); // Will show "No books available"
+			return;
+		}
+		try {
+			this.books = await this.plugin.client.listBooks();
+			this.populateBookSelect();
+			if (this.books.length > 0) {
+				// Optionally pre-select the first book or a previously selected one
+				// this.selectedBookId = this.books[0].id;
+				// this.bookSelectEl.value = this.selectedBookId;
+				// this.messageInputEl.placeholder = `Ask about ${this.books[0].title}...`;
+                // this.displaySystemMessage(`Chatting about: ${this.books[0].title}`);
+			}
+		} catch (error) {
+			console.error("Error loading books for chat:", error);
+			new Notice("Could not load books for chat. See console for details.");
+			this.books = [];
+			this.populateBookSelect(); // Will show "No books available" or error
+		}
+	}
+
+	populateBookSelect() {
+		this.bookSelectEl.empty(); // Clear existing options
+
+		if (this.books.length === 0) {
+			this.bookSelectEl.createEl("option", { text: "No books available", value: "" });
+			this.bookSelectEl.disabled = true;
+			this.selectedBookId = null;
+			return;
+		}
+		this.bookSelectEl.disabled = false;
+		this.bookSelectEl.createEl("option", { text: "-- Select a Book --", value: "" });
+		this.books.forEach(book => {
+			this.bookSelectEl.createEl("option", { text: book.title, value: book.id });
+		});
+		// Reset selectedBookId if current selection is no longer valid or if it was null
+        this.selectedBookId = this.bookSelectEl.value || null; 
+        if (this.selectedBookId) {
+            this.messageInputEl.placeholder = `Ask about ${this.books.find(b => b.id === this.selectedBookId)?.title}...`;
+        } else {
+             this.messageInputEl.placeholder = "Select a book to start chatting...";
+        }
+	}
+	
+	displaySystemMessage(message: string) {
+		const systemMessageEl = this.chatMessagesContainerEl.createDiv({ cls: "bookrise-system-message" });
+		systemMessageEl.setText(message);
+		systemMessageEl.style.fontStyle = "italic";
+		systemMessageEl.style.textAlign = "center";
+		systemMessageEl.style.marginBottom = "5px";
+		this.chatMessagesContainerEl.scrollTop = this.chatMessagesContainerEl.scrollHeight;
+	}
+
+	displayUserMessage(message: string) {
+		const userMessageEl = this.chatMessagesContainerEl.createDiv({ cls: "bookrise-user-message" });
+		userMessageEl.setText(`You: ${message}`);
+		// Add styling for user messages if desired
+		userMessageEl.style.textAlign = "right"; // Example
+		userMessageEl.style.marginBottom = "5px";
+		this.chatMessagesContainerEl.scrollTop = this.chatMessagesContainerEl.scrollHeight;
+	}
+
+	displayAIMessage(message: string) {
+		const aiMessageEl = this.chatMessagesContainerEl.createDiv({ cls: "bookrise-ai-message" });
+		aiMessageEl.setText(`BookRise AI: ${message}`);
+		// Add styling for AI messages
+		aiMessageEl.style.marginBottom = "5px";
+		this.chatMessagesContainerEl.scrollTop = this.chatMessagesContainerEl.scrollHeight;
+	}
+
+	async handleSendMessage() {
+		const message = this.messageInputEl.value.trim();
+		if (message === "") return;
+
+		if (!this.selectedBookId) {
+			new Notice("Please select a book before sending a message.");
+			return;
+		}
+		if (!this.plugin.client) {
+		    new Notice("BookRise client not ready. Check API key.");
+		    return;
+		}
+
+		this.displayUserMessage(message);
+		this.messageInputEl.value = ""; // Clear input
+		this.sendButtonEl.disabled = true; // Disable send button while waiting for response
+		this.messageInputEl.disabled = true; // Disable input while waiting
+
+		// Show a thinking message, which will be replaced by the actual response or an error
+		const thinkingMessageEl = this.chatMessagesContainerEl.createDiv({ cls: "bookrise-ai-message bookrise-thinking" });
+		thinkingMessageEl.setText("BookRise AI: Thinking...");
+		thinkingMessageEl.style.fontStyle = "italic";
+		this.chatMessagesContainerEl.scrollTop = this.chatMessagesContainerEl.scrollHeight;
+
+		try {
+			// We might need to manage chat history here in the future.
+			// For now, assuming the client.chat method takes the bookId and the current message.
+			// If your BookriseClient.chat method expects a history, you'll need to adapt this.
+			const response = await this.plugin.client.chat(this.selectedBookId, message /*, chatHistory */);
+			
+			// Remove the "Thinking..." message
+			thinkingMessageEl.remove();
+
+			if (response && response.answer) {
+				this.displayAIMessage(response.answer);
+			} else {
+				this.displayAIMessage("Received an empty or unexpected response from BookRise AI.");
+				console.warn("BookRise chat response missing 'answer' field or was falsy:", response);
+			}
+
+		} catch (error) {
+			console.error("Error calling BookRise chat API:", error);
+			thinkingMessageEl.remove(); // Remove "Thinking..." message on error too
+			this.displayAIMessage("Sorry, I couldn't get a response. Please try again. Check console for details.");
+			new Notice("Error sending chat message. See console.");
+		} finally {
+			this.sendButtonEl.disabled = false; // Re-enable send button
+			this.messageInputEl.disabled = false; // Re-enable input
+			this.messageInputEl.focus(); // Focus back on the input field
+		}
+	}
+
+	async onClose() {
+		// Nothing to clean up yet
+	}
 }
 
 export default class BookrisePlugin extends Plugin {
@@ -58,15 +292,19 @@ export default class BookrisePlugin extends Plugin {
 			}
 		});
 
-		// --- 2. Chat Sidebar --- 
-		// This adds a ribbon icon to open the chat sidebar
+		// Register the view
+		this.registerView(
+			BOOKRISE_CHAT_VIEW_TYPE,
+			(leaf) => new BookriseChatView(leaf, this)
+		);
+
+		// Updated Ribbon Icon to activate the view
 		this.addRibbonIcon('message-circle', 'Chat with BookRise Book', () => {
 			if (!this.client) {
-				new Notice('BookRise API key not set or client not initialized. Please configure it in the plugin settings.');
+				new Notice('BookRise API key not set. Please configure it in the plugin settings.');
 				return;
 			}
-			new Notice('Opening BookRise Chat Sidebar (Not Implemented Yet)!');
-			// this.activateChatView(); // We will implement this function
+			this.activateChatView();
 		});
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)@
@@ -273,10 +511,14 @@ export default class BookrisePlugin extends Plugin {
 		if (hl.location) fm += `location: "${hl.location}"\n`;
 		if (hl.created_at) fm += `highlight_created_at: ${hl.created_at}\n`;
 
-		const tags = ['BookRise', 'BookRiseHighlight']; // Keep these tags
+		const tags = ['BookRise', 'BookRiseHighlight'];
 		if (book.author) {
 			const authorTag = book.author.replace(/[^a-zA-Z0-9\-_]/g, '_');
 			tags.push(`author/${authorTag}`);
+		}
+		if (hl.color) {
+			const colorTag = `hlcolor/${hl.color.toLowerCase().replace(/\s+/g, '_')}`;
+			tags.push(colorTag);
 		}
 		fm += `tags: [${tags.map(t => `"${t.replace(/:/g, '-')}"`).join(', ')}]\n`;
 		// No separate source field for individual highlight notes, they inherit source via book and BookRise tag
@@ -290,8 +532,13 @@ export default class BookrisePlugin extends Plugin {
 		const metadataParts = [];
 		if (hl.page) metadataParts.push(`p. ${hl.page}`);
 		if (hl.location) metadataParts.push(`loc. ${hl.location}`);
-		if (hl.color) metadataParts.push(hl.color);
 		const metadataString = metadataParts.length > 0 ? ` (${metadataParts.join(', ')})` : '';
+		
+		let colorTagString = '';
+		if (hl.color) {
+			colorTagString = ` #hlcolor/${hl.color.toLowerCase().replace(/\s+/g, '_')}`;
+		}
+
 		let primaryLineContent = '';
 		let subNoteContent = '';
 
@@ -305,10 +552,13 @@ export default class BookrisePlugin extends Plugin {
 		} else {
 			primaryLineContent = '';
 		}
-		let finalPrimaryLine = primaryLineContent.trim() + metadataString;
-		if (finalPrimaryLine.length === 0 && metadataString.length === 0) {
+		let finalPrimaryLine = primaryLineContent.trim();
+		if (finalPrimaryLine.length === 0 && (metadataString.length > 0 || colorTagString.length > 0) ) {
 			finalPrimaryLine = " "; 
 		}
+		
+		finalPrimaryLine += metadataString + colorTagString;
+
 		let listItem = `- ${finalPrimaryLine.trim()} ^${blockId}\n`;
 		if (subNoteContent) {
 			listItem += subNoteContent;
@@ -363,7 +613,19 @@ export default class BookrisePlugin extends Plugin {
 		}
 	}
 
-	// async activateChatView() { /* ... */ }
+	// Method to activate the chat view
+	async activateChatView() {
+		this.app.workspace.detachLeavesOfType(BOOKRISE_CHAT_VIEW_TYPE);
+
+		await this.app.workspace.getRightLeaf(false)?.setViewState({
+			type: BOOKRISE_CHAT_VIEW_TYPE,
+			active: true,
+		});
+
+		this.app.workspace.revealLeaf(
+			this.app.workspace.getLeavesOfType(BOOKRISE_CHAT_VIEW_TYPE)[0]
+		);
+	}
 }
 
 // Settings Tab Implementation

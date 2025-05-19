@@ -117,10 +117,46 @@ export class BookriseClient {
       body.context_ids = contextIds;
     }
 
-    return this.request<ChatResponse>("/chat", {
+    // Special case for the chat endpoint if it's not under /api
+    const chatUrl = "https://app.bookrise.io/chat"; 
+
+    console.log(`Requesting: POST ${chatUrl} with book_id: ${bookId}`);
+    
+    // Directly use requestUrlFn for this special case to bypass baseUrl prefixing
+    const response = await this.requestUrlFn({
+      url: chatUrl,
       method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(body),
     });
+
+    if (response.status < 200 || response.status >= 300) {
+      let errorBody = response.text;
+      try {
+        const parsedError = JSON.parse(response.text);
+        errorBody = parsedError.detail || response.text;
+      } catch (e) {
+        // Not JSON
+      }
+      console.error(`API Error for chat: ${response.status}`, errorBody);
+      throw new Error(`Error calling BookRise chat: Status ${response.status} - ${errorBody}`);
+    }
+
+    const responseText = response.text;
+    if (!responseText && response.status !== 204) {
+      console.warn(`Empty response for chat status ${response.status} from ${chatUrl}`);
+      return { answer: "Received empty response." } as ChatResponse; // Provide a default ChatResponse
+    }
+    if (response.status === 204) {
+      return { answer: "Chat session updated (No Content)." } as ChatResponse; // Provide a default ChatResponse
+    }
+    
+    // Assuming the response is JSON and matches ChatResponse structure
+    // If it's streaming, this will need to change significantly.
+    return JSON.parse(responseText) as ChatResponse;
   }
 
   // Placeholder for GET /reading-queue (for feature #3)
