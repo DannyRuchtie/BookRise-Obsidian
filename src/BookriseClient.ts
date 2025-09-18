@@ -1,3 +1,5 @@
+import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
+
 // Define interfaces for API data structures
 export interface Book {
   id: string;
@@ -30,19 +32,21 @@ export interface ChatResponse {
   cited_chapters?: number[]; // Added to capture cited_chapters
 }
 
-// Define a type for the requestUrl function from Obsidian API
-// This helps in making BookriseClient testable outside Obsidian if needed
-// and clearly defines the dependency.
-export type RequestUrlFunc = (options: { url: string; method?: string; headers?: Record<string, string>; body?: string; }) => Promise<{ status: number; text: string; json: any; }>;
+// Define a type for the requestUrl function from Obsidian API so the client can
+// be provided with a mock during testing.
+export type RequestUrlFunc = (options: RequestUrlParam) => Promise<RequestUrlResponse>;
 
 export class BookriseClient {
-  private baseUrl = "https://app.bookrise.io"; // Remove /api since it's part of the endpoint
+  private baseUrl = "https://app.bookrise.io";
 
   constructor(private token: string, private requestUrlFn: RequestUrlFunc) {}
 
-  private async request<T>(endpoint: string, options: { method?: string; headers?: Record<string, string>; body?: string; } = {}): Promise<T> {
+  private async request<T>(
+    endpoint: string,
+    options: Partial<Pick<RequestUrlParam, "method" | "headers" | "body">> = {}
+  ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-    const requestOptions = {
+    const requestOptions: RequestUrlParam = {
       url,
       method: options.method || "GET",
       headers: {
@@ -133,83 +137,80 @@ export class BookriseClient {
 
       // If we have an onChunk callback, use streaming
       if (onChunk) {
-        const response = await fetch(`${this.baseUrl}${endpoint}`, {
+        const response = await this.requestUrlFn({
+          url: `${this.baseUrl}${endpoint}`,
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${this.token}`,
+            Authorization: `Bearer ${this.token}`,
             'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
+            Accept: 'text/event-stream',
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
         });
 
-        if (!response.ok) {
-          const errorText = await response.text();
+        if (response.status < 200 || response.status >= 300) {
+          const errorText = response.text ?? '';
           throw new Error(`Chat API error: ${response.status} - ${errorText}`);
         }
 
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('Failed to get response reader');
+        const streamPayload = response.text ?? '';
+        if (!streamPayload) {
+          throw new Error('Received empty response from chat API stream');
         }
 
         let fullAnswer = '';
-        const decoder = new TextDecoder();
-        let citedChapters: number[] = []; // Variable to store cited chapters
+        const citedChapters = new Set<number>();
 
-        while (true) {
-          const { done, value } = await reader.read();
-          console.log(`Stream reader: done = ${done}, value length = ${value ? value.byteLength : 'undefined'}`);
+        const emitChunk = (chunk: string) => {
+          if (!chunk) {
+            return;
+          }
+          fullAnswer += chunk;
+          onChunk(chunk);
+        };
 
-          if (done) break;
+        const lines = streamPayload.split(/\r?\n/);
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data:')) {
+            continue;
+          }
 
-          const chunk = decoder.decode(value, { stream: true }); // Use {stream: true} for TextDecoder
-          console.log("Raw stream chunk decoded:", chunk);
+          const data = line.slice(5).trim();
+          if (!data || data === '[DONE]') {
+            continue;
+          }
 
-          const lines = chunk.split('\n');
-          
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') continue;
-              
-              try {
-                const parsed = JSON.parse(data);
-                console.log("Parsed stream data chunk:", JSON.stringify(parsed)); // Log the parsed chunk
-                if (parsed.content) { // THIS IS THE KEY CHANGE
-                  fullAnswer += parsed.content;
-                  onChunk(parsed.content);
-                } else if (parsed.answer) { 
-                  fullAnswer += parsed.answer;
-                  onChunk(parsed.answer);
-                } else if (parsed.delta) { 
-                  fullAnswer += parsed.delta;
-                  onChunk(parsed.delta);
-                } else if (typeof parsed === 'string') { 
-                  fullAnswer += parsed;
-                  onChunk(parsed);
-                }
-
-                if (parsed.cited_chapters && Array.isArray(parsed.cited_chapters)) {
-                  citedChapters = citedChapters.concat(parsed.cited_chapters);
-                }
-
-                if (parsed.done && parsed.status === "completed") {
-                  // Optional: Could break here if [DONE] is not always sent separately
-                  // but the main loop condition `if (done) break;` should handle it.
-                }
-
-              } catch (e) {
-                console.warn('Failed to parse chunk:', e);
-              }
+          try {
+            const parsed = JSON.parse(data);
+            console.log('Parsed stream data chunk:', JSON.stringify(parsed));
+            if (parsed.content) {
+              emitChunk(parsed.content);
+            } else if (parsed.answer) {
+              emitChunk(parsed.answer);
+            } else if (parsed.delta) {
+              emitChunk(parsed.delta);
+            } else if (typeof parsed === 'string') {
+              emitChunk(parsed);
             }
+
+            if (parsed.cited_chapters && Array.isArray(parsed.cited_chapters)) {
+              parsed.cited_chapters.forEach((chapter: number) => {
+                if (typeof chapter === 'number') {
+                  citedChapters.add(chapter);
+                }
+              });
+            }
+          } catch (e) {
+            console.warn('Failed to parse chat stream chunk:', e);
+            emitChunk(data);
           }
         }
 
         return {
           answer: fullAnswer,
-          cited_paragraph_ids: [], // TODO: Get citations from stream (still to be refined if paragraph_ids are different from chapters)
-          cited_chapters: Array.from(new Set(citedChapters)) // Store unique chapter numbers
+          cited_paragraph_ids: [],
+          cited_chapters: Array.from(citedChapters),
         };
       }
 
