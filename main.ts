@@ -1,5 +1,16 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFolder, TFile, ItemView, WorkspaceLeaf } from 'obsidian';
-import { BookriseClient, Book, Highlight } from './src/BookriseClient'; // Assuming BookriseClient.ts is in a src folder
+import {
+  App,
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  requestUrl,
+  TFolder,
+  TFile,
+  ItemView,
+  WorkspaceLeaf,
+} from 'obsidian';
+import { BookriseClient, Book, Highlight } from './src/BookriseClient';
 
 // Define settings interface
 interface BookrisePluginSettings {
@@ -621,18 +632,27 @@ export default class BookrisePlugin extends Plugin {
 	}
 
 	// Method to activate the chat view
-	async activateChatView() {
-		this.app.workspace.detachLeavesOfType(BOOKRISE_CHAT_VIEW_TYPE);
+        async activateChatView() {
+                this.app.workspace.detachLeavesOfType(BOOKRISE_CHAT_VIEW_TYPE);
 
-		await this.app.workspace.getRightLeaf(false)?.setViewState({
-			type: BOOKRISE_CHAT_VIEW_TYPE,
-			active: true,
-		});
+                const rightLeaf = this.app.workspace.getRightLeaf(false);
+                if (!rightLeaf) {
+                        console.warn('No right workspace leaf available for BookRise chat view.');
+                        return;
+                }
 
-		this.app.workspace.revealLeaf(
-			this.app.workspace.getLeavesOfType(BOOKRISE_CHAT_VIEW_TYPE)[0]
-		);
-	}
+                await rightLeaf.setViewState({
+                        type: BOOKRISE_CHAT_VIEW_TYPE,
+                        active: true,
+                });
+
+                const chatLeaves = this.app.workspace.getLeavesOfType(BOOKRISE_CHAT_VIEW_TYPE);
+                if (chatLeaves.length > 0) {
+                        this.app.workspace.revealLeaf(chatLeaves[0]);
+                } else {
+                        console.warn('BookRise chat view was registered but no leaf was found to reveal.');
+                }
+        }
 }
 
 // Settings Tab Implementation
@@ -685,7 +705,3 @@ class BookriseSettingTab extends PluginSettingTab {
 				}));
 	}
 }
-
-// Note: We need to replace `fetch` in `BookriseClient.ts` with `requestUrl` from Obsidian API
-// for it to work correctly within an Obsidian plugin environment due to CORS and other considerations.
-// I will do this as a next step. 
