@@ -1,9 +1,9 @@
 {
-  "id": "bookrise-sync",
-  "name": "BookRise Sync",
+  "id": "bookrise-highlights-sync",
+  "name": "BookRise Highlights Sync",
   "version": "0.1.0",
   "minAppVersion": "0.15.0",
-  "description": "Syncs BookRise highlights and provides an in-Obsidian chat interface for your books.",
+  "description": "Syncs BookRise highlights and provides a chat interface for your books.",
   "author": "Danny Ruchtie",
   "authorUrl": "https://bookrise.io",
   "isDesktopOnly": false
